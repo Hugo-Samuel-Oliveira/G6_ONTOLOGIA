@@ -15,6 +15,8 @@
             background-color: #f7fafc;
             border-radius: 0.5rem;
         }
+        details > summary { list-style: none; }
+        details > summary::-webkit-details-marker { display: none; }
     </style>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -24,8 +26,8 @@
 
     <div class="w-full max-w-4xl bg-white rounded-xl shadow-lg p-6 space-y-6">
         <div class="text-center">
-            <h1 class="text-3xl font-bold text-gray-800">Assistente Virtual Semântico BIM</h1>
-            <p class="text-gray-500 mt-1">Faça uma pergunta ou clique duas vezes em um nó para explorá-lo.</p>
+            <h1 class="text-3xl font-bold text-gray-800">Assistente Virtual Semântico BIM v2.0</h1>
+            <p class="text-gray-500 mt-1">Faça uma pergunta ou use o construtor de consultas abaixo.</p>
         </div>
 
         <div id="chat-container" class="space-y-4">
@@ -37,22 +39,31 @@
         </div>
         
         <!-- Seção de Instruções e Exemplos -->
-        <div class="bg-blue-50 border border-blue-200 text-blue-800 p-4 rounded-lg">
-            <h3 class="font-bold mb-2">Como Usar</h3>
-            <p class="text-sm mb-2">Para consultar um objeto, use aspas simples no nome, como <code class="bg-blue-200 p-1 rounded">'floor'</code>.</p>
-            <h4 class="font-semibold mt-3 mb-1">Exemplos de Perguntas:</h4>
-            <ul class="list-disc list-inside text-sm space-y-1">
-                <li><code class="bg-blue-200 p-1 rounded">Qual o material do 'floor'?</code></li>
-                <li><code class="bg-blue-200 p-1 rounded">Onde está a parede 'house - outer wall - house left'?</code></li>
-                <li><code class="bg-blue-200 p-1 rounded">Qual o tipo do 'floor'?</code></li>
-                <li><code class="bg-blue-200 p-1 rounded">Mostre o grafo inteiro</code></li>
-            </ul>
-             <h4 class="font-semibold mt-3 mb-1">Interação com o Grafo:</h4>
-             <ul class="list-disc list-inside text-sm space-y-1">
-                <li>**Clique duplo** em um nó para focar nele e ver suas conexões.</li>
-                <li>Clique no botão **Restaurar Grafo** para voltar à visualização original.</li>
-            </ul>
-        </div>
+        <details class="bg-blue-50 border border-blue-200 rounded-lg open:shadow-lg transition-shadow">
+            <summary class="p-4 cursor-pointer font-bold text-blue-800 flex justify-between items-center">
+                <span>Construtor de Consultas</span>
+                <span class="text-xs font-normal text-blue-600"> (Clique para expandir)</span>
+            </summary>
+            <div class="p-4 border-t border-blue-200 space-y-4">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label for="relation-select" class="block text-sm font-medium text-gray-700">1. Selecione uma Relação</label>
+                        <select id="relation-select" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md">
+                            <option value="">-- Relações --</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="object-select" class="block text-sm font-medium text-gray-700">2. Selecione um Objeto</label>
+                        <select id="object-select" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md">
+                             <option value="">-- Objetos --</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="text-right">
+                    <button id="generate-query-btn" class="bg-green-600 text-white font-semibold px-4 py-2 rounded-lg hover:bg-green-700 transition-colors disabled:bg-gray-400" disabled>Gerar Pergunta</button>
+                </div>
+            </div>
+        </details>
 
         <div>
             <div class="flex justify-between items-center mb-2">
@@ -71,18 +82,19 @@
         const sendBtn = document.getElementById('send-btn');
         const resetBtn = document.getElementById('reset-btn');
         const graphContainer = document.getElementById('graph-container');
+        const relationSelect = document.getElementById('relation-select');
+        const objectSelect = document.getElementById('object-select');
+        const generateQueryBtn = document.getElementById('generate-query-btn');
 
         let network = null;
-        let lastMainGraphEndpoint = null; // Armazena o endpoint da consulta principal
+        let lastMainGraphEndpoint = null;
+        let ontologyData = {};
 
         const addMessage = (sender, message) => {
             const messageElem = document.createElement('div');
             messageElem.classList.add('p-2', 'rounded-lg', 'max-w-xs', 'break-words', 'shadow-sm');
-            if (sender === 'user') {
-                messageElem.classList.add('bg-blue-500', 'text-white', 'self-end', 'ml-auto');
-            } else {
-                messageElem.classList.add('bg-gray-200', 'text-gray-800', 'self-start', 'mr-auto');
-            }
+            if (sender === 'user') messageElem.classList.add('bg-blue-500', 'text-white', 'self-end', 'ml-auto');
+            else messageElem.classList.add('bg-gray-200', 'text-gray-800', 'self-start', 'mr-auto');
             messageElem.innerText = message;
             chatBox.appendChild(messageElem);
             chatBox.scrollTop = chatBox.scrollHeight;
@@ -96,16 +108,12 @@
                 physics: { enabled: true, barnesHut: { gravitationalConstant: -20000, springLength: 200, avoidOverlap: 0.2 }, stabilization: { iterations: 1000 } },
                 interaction: { hover: true }
             };
-            
-            graphContainer.innerHTML = ''; // Limpa a mensagem
+            graphContainer.innerHTML = '';
             network = new vis.Network(graphContainer, data, options);
-
             network.on("stabilizationIterationsDone", () => network.setOptions({ physics: false }));
-            
             network.on("doubleClick", params => {
                 if (params.nodes.length > 0) {
-                    const nodeId = params.nodes[0];
-                    const nodeLabel = data.nodes.get(nodeId).label;
+                    const nodeLabel = data.nodes.get(params.nodes[0]).label;
                     if (nodeLabel) {
                         addMessage('user', `Explorando: '${nodeLabel}'`);
                         fetchAndDrawGraph(`/graph-data?object_name=${encodeURIComponent(nodeLabel)}`, false);
@@ -118,12 +126,10 @@
             try {
                 const graphResponse = await fetch(endpoint);
                 const graphData = await graphResponse.json();
-
                 if (isMainQuery) {
                     lastMainGraphEndpoint = endpoint;
                     resetBtn.classList.remove('hidden');
                 }
-
                 if (graphData.nodes && graphData.nodes.length > 0) {
                     drawGraph(graphData.nodes, graphData.edges);
                 } else {
@@ -148,30 +154,79 @@
                 });
                 const chatData = await chatResponse.json();
                 addMessage('bot', chatData.response);
-
                 let endpoint = null;
-                if (chatData.action === 'full_graph') {
-                    endpoint = '/full-graph-data';
-                } else if (chatData.object) {
-                    endpoint = `/graph-data?object_name=${encodeURIComponent(chatData.object)}`;
-                }
-                if(endpoint) {
-                    fetchAndDrawGraph(endpoint, true);
-                }
-
+                if (chatData.action === 'full_graph') endpoint = '/full-graph-data';
+                else if (chatData.object) endpoint = `/graph-data?object_name=${encodeURIComponent(chatData.object)}`;
+                if(endpoint) fetchAndDrawGraph(endpoint, true);
             } catch (error) {
                 console.error('Erro:', error);
                 addMessage('bot', 'Desculpe, ocorreu um erro de comunicação com o servidor.');
             }
         };
 
+        const populateOntologyExplorer = async () => {
+            try {
+                const response = await fetch('/ontology-summary');
+                ontologyData = await response.json();
+
+                relationSelect.innerHTML = '<option value="">-- Selecione a Relação --</option>';
+                ontologyData.relations.forEach(rel => {
+                    const option = document.createElement('option');
+                    option.value = rel;
+                    option.textContent = rel;
+                    relationSelect.appendChild(option);
+                });
+                
+                objectSelect.innerHTML = '<option value="">-- Selecione o Objeto --</option>';
+                ontologyData.types.forEach(type => {
+                    const optgroup = document.createElement('optgroup');
+                    optgroup.label = type.type;
+                    type.examples.forEach(ex => {
+                        const option = document.createElement('option');
+                        option.value = ex;
+                        option.textContent = ex;
+                        optgroup.appendChild(option);
+                    });
+                    objectSelect.appendChild(optgroup);
+                });
+
+            } catch (error) {
+                 relationSelect.innerHTML = '<option>Erro ao carregar</option>';
+                 objectSelect.innerHTML = '<option>Erro ao carregar</option>';
+            }
+        };
+
+        const checkSelections = () => {
+            generateQueryBtn.disabled = !(relationSelect.value && objectSelect.value);
+        };
+
+        const generateQuestion = () => {
+            const relation = relationSelect.value;
+            const object = objectSelect.value;
+            if(!relation || !object) return;
+
+            let questionTemplate = `Qual a relação '${relation}' para o objeto '${object}'?`;
+            const relLower = relation.toLowerCase();
+
+            if (relLower.includes('material')) questionTemplate = `Qual o material do '${object}'?`;
+            else if (relLower.includes('iscontainedin')) questionTemplate = `Onde está o '${object}'?`;
+            else if (relLower.includes('isoftype')) questionTemplate = `Qual o tipo de '${object}'?`;
+            else if (relLower.includes('aggregates')) questionTemplate = `O que o '${object}' contém?`;
+
+            userInput.value = questionTemplate;
+            userInput.focus();
+        };
+
         sendBtn.addEventListener('click', sendMessage);
         userInput.addEventListener('keypress', (e) => e.key === 'Enter' && sendMessage());
         resetBtn.addEventListener('click', () => {
-            if(lastMainGraphEndpoint) {
-                fetchAndDrawGraph(lastMainGraphEndpoint, true);
-            }
+            if(lastMainGraphEndpoint) fetchAndDrawGraph(lastMainGraphEndpoint, true);
         });
+        relationSelect.addEventListener('change', checkSelections);
+        objectSelect.addEventListener('change', checkSelections);
+        generateQueryBtn.addEventListener('click', generateQuestion);
+
+        document.addEventListener('DOMContentLoaded', populateOntologyExplorer);
     </script>
 </body>
 </html>

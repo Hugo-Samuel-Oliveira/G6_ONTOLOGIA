@@ -52,18 +52,25 @@ def extract_bim_property(text):
 def query_bim_property(object_name, property_keyword):
     if not object_name: return "Não consegui identificar sobre qual elemento você está perguntando."
     predicate = PROPERTY_MAP.get(property_keyword, "rdfs:label")
+    if not predicate: return f"Não sei como consultar a propriedade '{property_keyword}'."
 
     sparql = SPARQLWrapper(FUSEKI_ENDPOINT)
     sparql.setReturnFormat(JSON)
+    # Consulta bidirecional para encontrar a relação em qualquer direção
     query = f"""
         PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
         PREFIX inst: <{BASE_URI}>
         PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
         SELECT ?valueLabel WHERE {{
-            ?element rdfs:label "{object_name}" .
-            ?element {predicate} ?value .
-            OPTIONAL {{ ?value rdfs:label ?valueLabelFromResource . }}
-            BIND(COALESCE(?valueLabelFromResource, STR(?value)) AS ?valueLabel)
+            {{
+                ?element rdfs:label "{object_name}" .
+                ?element {predicate} ?value .
+            }} UNION {{
+                ?value rdfs:label "{object_name}" .
+                ?element {predicate} ?value .
+            }}
+            OPTIONAL {{ ?element rdfs:label ?valueLabel . }}
+            FILTER(?valueLabel != "{object_name}")
         }} LIMIT 1
     """
     try:
@@ -72,7 +79,7 @@ def query_bim_property(object_name, property_keyword):
         bindings = results["results"]["bindings"]
         if bindings:
             value = bindings[0]["valueLabel"]["value"].split('#')[-1]
-            return f"A propriedade '{property_keyword}' de '{object_name}' é: {value}."
+            return f"A propriedade '{property_keyword}' para '{object_name}' é: {value}."
         else:
             return f"Desculpe, não encontrei a propriedade '{property_keyword}' para o objeto '{object_name}'."
     except Exception as e:
@@ -140,7 +147,6 @@ def get_graph_data():
             s_uri = res['s']['value']; s_label = res['s_label']['value']
             o_uri = res['o']['value']; o_label = res.get('o_label', {}).get('value', o_uri.split('#')[-1])
             
-            # Adiciona os nós (sujeito e objeto)
             if s_uri not in node_ids:
                 is_central = s_label == object_name
                 nodes.append({"id": s_uri, "label": s_label, "color": "#a3e635" if is_central else "#93c5fd", "size": 25 if is_central else 15});
@@ -150,7 +156,6 @@ def get_graph_data():
                 nodes.append({"id": o_uri, "label": o_label, "color": "#a3e635" if is_central else "#93c5fd", "size": 25 if is_central else 15});
                 node_ids.add(o_uri)
             
-            # Adiciona a aresta
             edges.append({"from": s_uri, "to": o_uri, "label": res['p_label']['value']})
     except Exception as e: print(f"Erro ao gerar dados do grafo: {e}")
     return jsonify({"nodes": nodes, "edges": edges})
@@ -185,6 +190,55 @@ def get_full_graph_data():
     except Exception as e: print(f"Erro ao gerar grafo completo: {e}")
     return jsonify({"nodes": nodes, "edges": edges})
 
+@app.route('/ontology-summary')
+def get_ontology_summary():
+    sparql = SPARQLWrapper(FUSEKI_ENDPOINT)
+    sparql.setReturnFormat(JSON)
+    
+    query_types = f"""
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        PREFIX inst: <{BASE_URI}>
+        SELECT ?type_label (GROUP_CONCAT(DISTINCT ?example_label; SEPARATOR=", ") AS ?examples)
+        WHERE {{
+            ?s a ?type .
+            ?s rdfs:label ?example_label .
+            ?type rdfs:label ?type_label .
+            FILTER(STRSTARTS(STR(?type), STR(inst:)))
+        }}
+        GROUP BY ?type_label
+        ORDER BY ?type_label
+    """
+    
+    query_relations = f"""
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        PREFIX inst: <{BASE_URI}>
+        SELECT DISTINCT ?p_label
+        WHERE {{
+            ?s ?p ?o .
+            FILTER(STRSTARTS(STR(?p), STR(inst:)))
+            BIND(REPLACE(STR(?p), ".*[/#]", "") AS ?p_label)
+        }}
+        ORDER BY ?p_label
+    """
+    
+    try:
+        sparql.setQuery(query_types)
+        types_results = sparql.query().convert()
+        
+        sparql.setQuery(query_relations)
+        relations_results = sparql.query().convert()
+        
+        types = [
+            {"type": res['type_label']['value'], "examples": res['examples']['value'].split(', ')} 
+            for res in types_results["results"]["bindings"]
+        ]
+        relations = [res['p_label']['value'] for res in relations_results["results"]["bindings"]]
+
+        return jsonify({"types": types, "relations": relations})
+
+    except Exception as e:
+        print(f"Erro ao buscar resumo da ontologia: {e}")
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     if not os.path.exists(NLU_MODEL_PATH):
@@ -192,4 +246,3 @@ if __name__ == '__main__':
         print("!!! Execute 'python setup.py' para criar os modelos e dados necessários.")
     else:
         app.run(host='0.0.0.0', port=5000, debug=False)
-
