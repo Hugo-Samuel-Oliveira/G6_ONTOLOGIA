@@ -7,29 +7,29 @@ import json
 
 app = Flask(__name__)
 
-# --- Configurações ---
-FUSEKI_ENDPOINT = os.environ.get("FUSEKI_ENDPOINT", "http://localhost:3030/BIM_Knowledge_Base/sparql")
+# --- Configurações e Mapeamento ---
+FUSEKI_ENDPOINT = os.environ.get("FUSEKI_ENDPOINT", "http://localhost:3030/BIM_Knowledge_Base/query")
 NLU_MODEL_PATH = "./nlu_model"
-
-# --- Mapeamento Semântico ---
+BASE_URI = "http://exemplo.org/bim#"
 PROPERTY_MAP = {
-    "material": "inst:hasMaterial",
-    "composição": "inst:hasMaterial",
-    "feito de": "inst:hasMaterial",
-    "nome": "rdfs:label",
+    "material": "inst:hasMaterial", "composição": "inst:hasMaterial", "feito de": "inst:hasMaterial",
+    "onde está": "inst:isContainedIn", "localização": "inst:isContainedIn", "parte de": "inst:isContainedIn",
+    "tipo": "inst:isOfType", "tipo de": "inst:isOfType",
+    "agrega": "inst:aggregates", "contém": "inst:aggregates",
+    "classe": "rdf:type", "nome": "rdfs:label",
 }
 
-# --- Carregar modelo NLU ---
+# --- Carregamento do Modelo NLU ---
+nlp = None
 try:
     nlp = spacy.load(NLU_MODEL_PATH)
-    print("Modelo de NLU carregado com sucesso.")
+    print("-> Modelo de NLU carregado com sucesso.")
 except IOError:
-    print(f"Erro: Modelo não encontrado em {NLU_MODEL_PATH}. Execute train_nlu.py primeiro.")
-    nlp = None
+    print(f"-> ALERTA: Modelo de NLU não encontrado. Execute 'python setup.py' primeiro.")
 
-# --- Funções de Lógica ---
+# --- Funções de Lógica do Chatbot ---
 def get_intent(text):
-    if not nlp: return None
+    if not nlp: return "error"
     doc = nlp(text)
     return max(doc.cats, key=doc.cats.get)
 
@@ -51,14 +51,14 @@ def extract_bim_property(text):
 
 def query_bim_property(object_name, property_keyword):
     if not object_name: return "Não consegui identificar sobre qual elemento você está perguntando."
-    predicate = PROPERTY_MAP.get(property_keyword)
-    if not predicate: return f"Não sei como consultar a propriedade '{property_keyword}'."
+    predicate = PROPERTY_MAP.get(property_keyword, "rdfs:label")
 
     sparql = SPARQLWrapper(FUSEKI_ENDPOINT)
     sparql.setReturnFormat(JSON)
     query = f"""
         PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-        PREFIX inst: <http://exemplo.org/bim#>
+        PREFIX inst: <{BASE_URI}>
+        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
         SELECT ?valueLabel WHERE {{
             ?element rdfs:label "{object_name}" .
             ?element {predicate} ?value .
@@ -71,111 +71,79 @@ def query_bim_property(object_name, property_keyword):
         results = sparql.query().convert()
         bindings = results["results"]["bindings"]
         if bindings:
-            value = bindings[0]["valueLabel"]["value"]
+            value = bindings[0]["valueLabel"]["value"].split('#')[-1]
             return f"A propriedade '{property_keyword}' de '{object_name}' é: {value}."
         else:
             return f"Desculpe, não encontrei a propriedade '{property_keyword}' para o objeto '{object_name}'."
     except Exception as e:
-        print(f"Erro na consulta SPARQL: {e}")
-        return "Ocorreu um erro ao buscar a informação na base de conhecimento."
+        return f"Erro na consulta SPARQL: {e}"
 
-# --- Endpoints da API ---
+# --- Endpoints da Aplicação ---
 @app.route('/')
 def index():
     return render_template('index.html')
 
 @app.route('/chat', methods=['POST'])
 def chat():
-    try:
-        data = request.get_json()
-        user_message = data.get("message")
-    except Exception:
-        raw_data = request.get_data()
-        try:
-            decoded_data = raw_data.decode('utf-8')
-        except UnicodeDecodeError:
-            decoded_data = raw_data.decode('latin-1', errors='ignore')
-        data = json.loads(decoded_data)
-        user_message = data.get("message")
-
-    if not user_message:
-        return jsonify({"error": "Mensagem não fornecida."}), 400
+    try: data = request.get_json(force=True); user_message = data.get("message")
+    except Exception: return jsonify({"error": "JSON inválido"}), 400
+    if not user_message: return jsonify({"error": "Mensagem não fornecida."}), 400
 
     intent = get_intent(user_message)
     response_text = "Desculpe, não entendi o que você quis dizer."
-    bim_object = None
-
-    if intent == "saudacao":
-        response_text = "Olá! Sou seu assistente BIM. Como posso ajudar?"
-    elif intent == "despedida":
-        response_text = "Até mais!"
+    bim_object = None; bim_property = None
+    if intent == "saudacao": response_text = "Olá! Sou seu assistente BIM. Como posso ajudar?"
+    elif intent == "despedida": response_text = "Até mais!"
     elif intent == "perguntar_propriedade":
         bim_object = extract_bim_object(user_message)
         bim_property = extract_bim_property(user_message)
         response_text = query_bim_property(bim_object, bim_property)
+    return jsonify({"response": response_text, "object": bim_object, "property": bim_property})
 
-    return jsonify({"response": response_text, "object": bim_object})
 
 @app.route('/graph-data')
 def get_graph_data():
-    """Fornece dados do sub-grafo de um objeto para visualização."""
     object_name = request.args.get('object_name')
-    if not object_name:
-        return jsonify({"nodes": [], "edges": []})
+    if not object_name: return jsonify({"nodes": [], "edges": []})
 
     sparql = SPARQLWrapper(FUSEKI_ENDPOINT)
     sparql.setReturnFormat(JSON)
-    
-    # Query para obter o elemento principal e suas relações diretas
     query = f"""
         PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-        PREFIX inst: <http://exemplo.org/bim#>
-
-        SELECT ?element ?p ?relatedElement ?relatedName
+        PREFIX inst: <{BASE_URI}>
+        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+        SELECT ?s ?s_label ?p_label ?o ?o_label
         WHERE {{
-            ?element rdfs:label "{object_name}" .
-            ?element ?p ?relatedElement .
-            FILTER(STRSTARTS(STR(?p), STR(inst:)))
-            FILTER(isIRI(?relatedElement))
-            OPTIONAL {{ ?relatedElement rdfs:label ?relatedName . }}
+            ?s rdfs:label "{object_name}" .
+            ?s rdfs:label ?s_label .
+            ?s ?p ?o .
+            BIND(REPLACE(STR(?p), ".*[/#]", "") AS ?p_label)
+            FILTER(isIRI(?o))
+            OPTIONAL {{ ?o rdfs:label ?o_label . }}
         }}
     """
-    
-    nodes, edges = [], []
-    node_ids = set()
-    
+    nodes, edges, node_ids = [], [], set()
     try:
         sparql.setQuery(query)
         results = sparql.query().convert()
         bindings = results.get("results", {}).get("bindings", [])
+        if not bindings: return jsonify({"nodes": [], "edges": []})
 
-        if not bindings:
-            print(f"Alerta: A consulta SPARQL para o grafo de '{object_name}' não retornou resultados.")
-            return jsonify({"nodes": [], "edges": []})
-
-        # Adiciona o nó central primeiro
-        central_node_uri = bindings[0]['element']['value']
-        if central_node_uri not in node_ids:
-            nodes.append({"id": central_node_uri, "label": object_name})
-            node_ids.add(central_node_uri)
-
-        # Itera sobre as relações
         for res in bindings:
-            related_node_uri = res['relatedElement']['value']
-            if related_node_uri not in node_ids:
-                # Usa o label encontrado ou um fallback
-                related_label = res.get('relatedName', {}).get('value', related_node_uri.split('#')[-1])
-                nodes.append({"id": related_node_uri, "label": related_label})
-                node_ids.add(related_node_uri)
-            
-            prop_uri = res['p']['value']
-            prop_label = prop_uri.split('#')[-1]
-            edges.append({"from": central_node_uri, "to": related_node_uri, "label": prop_label})
-
-    except Exception as e:
-        print(f"Erro ao gerar dados do grafo: {e}")
-
+            s_uri = res['s']['value']; s_label = res['s_label']['value']
+            if s_uri not in node_ids:
+                nodes.append({"id": s_uri, "label": s_label, "color": "#a3e635", "size": 25}); node_ids.add(s_uri)
+            o_uri = res['o']['value']
+            if o_uri not in node_ids:
+                o_label = res.get('o_label', {}).get('value', o_uri.split('#')[-1])
+                nodes.append({"id": o_uri, "label": o_label}); node_ids.add(o_uri)
+            edges.append({"from": s_uri, "to": o_uri, "label": res['p_label']['value']})
+    except Exception as e: print(f"Erro ao gerar dados do grafo: {e}")
     return jsonify({"nodes": nodes, "edges": edges})
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    if not os.path.exists(NLU_MODEL_PATH):
+        print("!!! ATENÇÃO: Modelo de NLU não encontrado.")
+        print("!!! Execute 'python setup.py' para criar os modelos e dados necessários.")
+    else:
+        app.run(host='0.0.0.0', port=5000, debug=False)

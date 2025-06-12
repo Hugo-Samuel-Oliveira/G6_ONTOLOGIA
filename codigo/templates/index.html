@@ -113,12 +113,12 @@
                 addMessage('bot', chatData.response);
 
                 if (chatData.object) {
-                    const graphResponse = await fetch(`/graph-data?object_name=${encodeURIComponent(chatData.object)}`);
+                    const graphResponse = await fetch(`/graph-data?object_name=${encodeURIComponent(chatData.object)}&property_keyword=${encodeURIComponent(chatData.property)}`);
                     const graphData = await graphResponse.json();
                     if(graphData.nodes && graphData.nodes.length > 0) {
                         drawGraph(graphData.nodes, graphData.edges);
                     } else {
-                        graphContainer.innerHTML = '<p class="p-4 text-gray-500">Nenhum dado de grafo para visualizar para este objeto.</p>';
+                        graphContainer.innerHTML = '<p class="p-4 text-gray-500">Nenhum dado de grafo para visualizar para este objeto ou propriedade.</p>';
                     }
                 }
 
