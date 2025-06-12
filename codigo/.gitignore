@@ -1,0 +1,48 @@
+# Arquivo .gitignore para o projeto de Chatbot BIM com Flask e spaCy
+
+# 1. Ambiente Virtual do Python
+# Ignora a pasta do ambiente virtual para não enviar bibliotecas de terceiros para o repositório.
+venv/
+/venv/
+.venv/
+/.venv/
+env/
+/env/
+.env/
+/.env/
+
+# 2. Cache e arquivos compilados do Python
+# Python gera esses arquivos para otimizar a execução. Eles não são necessários no repositório.
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 3. Modelos de NLU e dados gerados
+# Ignora a pasta com o modelo treinado e os arquivos de ontologia gerados.
+# É uma boa prática versionar o script de treinamento, não o modelo final.
+/nlu_model/
+*.ttl
+
+# 4. Arquivos de configuração de IDEs e editores
+# Evita conflitos de configuração de ambiente de desenvolvimento entre colaboradores.
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# 5. Arquivos de dependências e build do Python
+dist/
+build/
+*.egg-info/
+*.egg
+
+# 6. Arquivos de log e bancos de dados locais
+*.log
+*.sqlite3
+*.db
+
+# 7. Arquivos de sistema operacional
+# Ignora arquivos gerados automaticamente pelo sistema operacional.
+.DS_Store
+Thumbs.db
