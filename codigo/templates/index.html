@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Assistente Virtual BIM</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        #graph-container {
+            width: 100%;
+            height: 400px;
+            border: 1px solid #e2e8f0;
+            background-color: #f7fafc;
+            border-radius: 0.5rem;
+        }
+    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+</head>
+<body class="bg-gray-100 flex flex-col items-center justify-center min-h-screen p-4">
+
+    <div class="w-full max-w-4xl bg-white rounded-xl shadow-lg p-6 space-y-6">
+        <div class="text-center">
+            <h1 class="text-3xl font-bold text-gray-800">Assistente Virtual Semântico BIM</h1>
+            <p class="text-gray-500 mt-1">Faça uma pergunta em linguagem natural sobre o modelo IFC.</p>
+        </div>
+
+        <!-- Chat Interface -->
+        <div id="chat-container" class="space-y-4">
+            <div id="chat-box" class="h-64 overflow-y-auto p-4 border rounded-lg bg-gray-50 flex flex-col space-y-2">
+                 <!-- Mensagens do chat aparecerão aqui -->
+            </div>
+            <div class="flex space-x-2">
+                <input type="text" id="user-input" class="flex-grow border rounded-lg p-2 focus:ring-2 focus:ring-blue-500 focus:outline-none" placeholder="Qual o material do 'floor'?">
+                <button id="send-btn" class="bg-blue-600 text-white font-semibold px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">
+                    Enviar
+                </button>
+            </div>
+        </div>
+
+        <!-- Graph Visualization -->
+        <div>
+            <h2 class="text-xl font-bold text-gray-700 mb-2">Visualização do Grafo</h2>
+            <div id="graph-container">
+                 <p class="p-4 text-gray-500 text-center">Faça uma pergunta sobre um objeto para ver seu grafo.</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const chatBox = document.getElementById('chat-box');
+        const userInput = document.getElementById('user-input');
+        const sendBtn = document.getElementById('send-btn');
+        const graphContainer = document.getElementById('graph-container');
+
+        const addMessage = (sender, message) => {
+            const messageElem = document.createElement('div');
+            messageElem.classList.add('p-2', 'rounded-lg', 'max-w-xs', 'break-words', 'shadow-sm');
+            if (sender === 'user') {
+                messageElem.classList.add('bg-blue-500', 'text-white', 'self-end', 'ml-auto');
+            } else {
+                messageElem.classList.add('bg-gray-200', 'text-gray-800', 'self-start', 'mr-auto');
+            }
+            messageElem.innerText = message;
+            chatBox.appendChild(messageElem);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        };
+
+        const drawGraph = (nodes, edges) => {
+            const data = { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) };
+            const options = {
+                nodes: {
+                    shape: 'box',
+                    font: { size: 14, color: '#333' },
+                    borderWidth: 2,
+                    color: { border: '#4299e1', background: '#ebf8ff' },
+                    margin: 10,
+                },
+                edges: {
+                    arrows: 'to',
+                    font: { align: 'middle', size: 12, color: '#555', strokeWidth: 0 },
+                    color: '#63b3ed',
+                    smooth: true
+                },
+                physics: {
+                    enabled: true,
+                    solver: 'barnesHut'
+                },
+                layout: {
+                    hierarchical: { enabled: false }
+                }
+            };
+            new vis.Network(graphContainer, data, options);
+        };
+        
+        const sendMessage = async () => {
+            const message = userInput.value.trim();
+            if (!message) return;
+
+            addMessage('user', message);
+            userInput.value = '';
+
+            try {
+                const chatResponse = await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+                    body: JSON.stringify({ message })
+                });
+                const chatData = await chatResponse.json();
+                addMessage('bot', chatData.response);
+
+                if (chatData.object) {
+                    const graphResponse = await fetch(`/graph-data?object_name=${encodeURIComponent(chatData.object)}`);
+                    const graphData = await graphResponse.json();
+                    if(graphData.nodes && graphData.nodes.length > 0) {
+                        drawGraph(graphData.nodes, graphData.edges);
+                    } else {
+                        graphContainer.innerHTML = '<p class="p-4 text-gray-500">Nenhum dado de grafo para visualizar para este objeto.</p>';
+                    }
+                }
+
+            } catch (error) {
+                console.error('Erro:', error);
+                addMessage('bot', 'Desculpe, ocorreu um erro de comunicação com o servidor.');
+            }
+        };
+
+        sendBtn.addEventListener('click', sendMessage);
+        userInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+    </script>
+</body>
+</html>

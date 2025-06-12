@@ -1,43 +1,39 @@
 import spacy
-from spacy.tokens import DocBin
+from spacy.training.example import Example
 import random
 
-# 1. Dados de Treinamento
-# Formato: (texto, {"cats": {"INTENCAO": True/False, ...}})
+# Dados de Treinamento para classificação de intenção
 TRAIN_DATA = [
-    ("oi", {"cats": {"saudacao": True, "despedida": False, "perguntar_propriedade": False}}),
-    ("olá", {"cats": {"saudacao": True, "despedida": False, "perguntar_propriedade": False}}),
-    ("bom dia", {"cats": {"saudacao": True, "despedida": False, "perguntar_propriedade": False}}),
-
-    ("tchau", {"cats": {"saudacao": False, "despedida": True, "perguntar_propriedade": False}}),
-    ("adeus", {"cats": {"saudacao": False, "despedida": True, "perguntar_propriedade": False}}),
-    ("até mais", {"cats": {"saudacao": False, "despedida": True, "perguntar_propriedade": False}}),
-
-    ("Qual o material da parede P-10?", {"cats": {"saudacao": False, "despedida": False, "perguntar_propriedade": True}}),
-    ("Do que é feito o pilar C-05?", {"cats": {"saudacao": False, "despedida": False, "perguntar_propriedade": True}}),
-    ("me diga o material da laje L-01", {"cats": {"saudacao": False, "despedida": False, "perguntar_propriedade": True}}),
-    ("para que serve a viga V-202", {"cats": {"saudacao": False, "despedida": False, "perguntar_propriedade": True}}),
-    ("qual a função da parede interna 08", {"cats": {"saudacao": False, "despedida": False, "perguntar_propriedade": True}})
+    ("oi", {"cats": {"saudacao": 1.0, "despedida": 0.0, "perguntar_propriedade": 0.0}}),
+    ("olá", {"cats": {"saudacao": 1.0, "despedida": 0.0, "perguntar_propriedade": 0.0}}),
+    ("tchau", {"cats": {"saudacao": 0.0, "despedida": 1.0, "perguntar_propriedade": 0.0}}),
+    ("adeus", {"cats": {"saudacao": 0.0, "despedida": 1.0, "perguntar_propriedade": 0.0}}),
+    ("Qual o material da parede P-10?", {"cats": {"saudacao": 0.0, "despedida": 0.0, "perguntar_propriedade": 1.0}}),
+    ("Do que é feito o 'pilar C-05'?", {"cats": {"saudacao": 0.0, "despedida": 0.0, "perguntar_propriedade": 1.0}}),
+    ("me diga a composição da laje L-01", {"cats": {"saudacao": 0.0, "despedida": 0.0, "perguntar_propriedade": 1.0}})
 ]
 
-# 2. Criação do Modelo
-nlp = spacy.blank("pt")  # Cria um pipeline em português em branco
-category_pipe = nlp.add_pipe("textcat") # Adiciona o classificador de texto
+# Cria um pipeline em português em branco
+nlp = spacy.blank("pt")
+# Adiciona o componente 'textcat' para classificação de texto
+textcat = nlp.add_pipe("textcat")
 
-# Adiciona os labels (intenções) ao pipe
-category_pipe.add_label("saudacao")
-category_pipe.add_label("despedida")
-category_pipe.add_label("perguntar_propriedade")
+# Adiciona os labels (intenções) ao componente
+textcat.add_label("saudacao")
+textcat.add_label("despedida")
+textcat.add_label("perguntar_propriedade")
 
-# 3. Treinamento
-optimizer = nlp.begin_training()
+# Inicia o treinamento
+optimizer = nlp.initialize()
 for i in range(10): # Número de épocas de treinamento
     random.shuffle(TRAIN_DATA)
+    losses = {}
     for text, annotations in TRAIN_DATA:
         doc = nlp.make_doc(text)
-        example = spacy.training.Example.from_dict(doc, annotations)
-        nlp.update([example], sgd=optimizer)
+        example = Example.from_dict(doc, annotations)
+        nlp.update([example], drop=0.5, losses=losses)
+    print(f"Losses na época {i}: {losses}")
 
-# 4. Salvar o modelo
+# Salva o modelo treinado
 nlp.to_disk("./nlu_model")
 print("Modelo de NLU treinado e salvo em ./nlu_model")
