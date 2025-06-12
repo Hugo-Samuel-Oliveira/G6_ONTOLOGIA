@@ -35,11 +35,29 @@
                 <button id="send-btn" class="bg-blue-600 text-white font-semibold px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">Enviar</button>
             </div>
         </div>
+        
+        <!-- Seção de Instruções e Exemplos -->
+        <div class="bg-blue-50 border border-blue-200 text-blue-800 p-4 rounded-lg">
+            <h3 class="font-bold mb-2">Como Usar</h3>
+            <p class="text-sm mb-2">Para consultar um objeto, use aspas simples no nome, como <code class="bg-blue-200 p-1 rounded">'floor'</code>.</p>
+            <h4 class="font-semibold mt-3 mb-1">Exemplos de Perguntas:</h4>
+            <ul class="list-disc list-inside text-sm space-y-1">
+                <li><code class="bg-blue-200 p-1 rounded">Qual o material do 'floor'?</code></li>
+                <li><code class="bg-blue-200 p-1 rounded">Onde está a parede 'house - outer wall - house left'?</code></li>
+                <li><code class="bg-blue-200 p-1 rounded">Qual o tipo do 'floor'?</code></li>
+                <li><code class="bg-blue-200 p-1 rounded">Mostre o grafo inteiro</code></li>
+            </ul>
+             <h4 class="font-semibold mt-3 mb-1">Interação com o Grafo:</h4>
+             <ul class="list-disc list-inside text-sm space-y-1">
+                <li>**Clique duplo** em um nó para focar nele e ver suas conexões.</li>
+                <li>Clique no botão **Restaurar Grafo** para voltar à visualização original.</li>
+            </ul>
+        </div>
 
         <div>
             <div class="flex justify-between items-center mb-2">
                 <h2 class="text-xl font-bold text-gray-700">Visualização do Grafo</h2>
-                <button id="reset-btn" class="bg-gray-200 text-gray-700 text-sm font-semibold px-3 py-1 rounded-lg hover:bg-gray-300 transition-colors hidden">Mostrar Grafo Original</button>
+                <button id="reset-btn" class="bg-gray-200 text-gray-700 text-sm font-semibold px-3 py-1 rounded-lg hover:bg-gray-300 transition-colors hidden">Restaurar Grafo</button>
             </div>
             <div id="graph-container">
                  <p class="p-4 text-gray-500 text-center">Faça uma pergunta para ver o grafo.</p>
@@ -55,7 +73,7 @@
         const graphContainer = document.getElementById('graph-container');
 
         let network = null;
-        let originalGraphData = { nodes: new vis.DataSet(), edges: new vis.DataSet() };
+        let lastMainGraphEndpoint = null; // Armazena o endpoint da consulta principal
 
         const addMessage = (sender, message) => {
             const messageElem = document.createElement('div');
@@ -71,15 +89,15 @@
         };
 
         const drawGraph = (nodes, edges) => {
-            const data = { nodes: nodes, edges: edges };
+            const data = { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) };
             const options = {
                 nodes: { shape: 'ellipse', font: { size: 16, color: '#374151' }, borderWidth: 2, margin: 15 },
                 edges: { arrows: 'to', font: { align: 'middle', size: 12, color: '#4b5563', background: 'rgba(255, 255, 255, 0.8)' }, color: { color: '#60a5fa', highlight: '#3b82f6' }, smooth: true },
-                physics: { enabled: true, barnesHut: { gravitationalConstant: -15000, springLength: 200, avoidOverlap: 0.1 }, stabilization: { iterations: 500 } },
+                physics: { enabled: true, barnesHut: { gravitationalConstant: -20000, springLength: 200, avoidOverlap: 0.2 }, stabilization: { iterations: 1000 } },
                 interaction: { hover: true }
             };
             
-            graphContainer.innerHTML = ''; // Limpa a mensagem de "nenhum dado"
+            graphContainer.innerHTML = ''; // Limpa a mensagem
             network = new vis.Network(graphContainer, data, options);
 
             network.on("stabilizationIterationsDone", () => network.setOptions({ physics: false }));
@@ -87,26 +105,27 @@
             network.on("doubleClick", params => {
                 if (params.nodes.length > 0) {
                     const nodeId = params.nodes[0];
-                    const node = originalGraphData.nodes.get(nodeId);
-                    if (node && node.label) {
-                        addMessage('user', `Explorando o nó: '${node.label}'`);
-                        fetchAndDrawGraph(`/graph-data?object_name=${encodeURIComponent(node.label)}`);
+                    const nodeLabel = data.nodes.get(nodeId).label;
+                    if (nodeLabel) {
+                        addMessage('user', `Explorando: '${nodeLabel}'`);
+                        fetchAndDrawGraph(`/graph-data?object_name=${encodeURIComponent(nodeLabel)}`, false);
                     }
                 }
             });
         };
         
-        const fetchAndDrawGraph = async (endpoint) => {
+        const fetchAndDrawGraph = async (endpoint, isMainQuery = true) => {
             try {
                 const graphResponse = await fetch(endpoint);
                 const graphData = await graphResponse.json();
-                if (graphData.nodes && graphData.nodes.length > 0) {
-                    originalGraphData.nodes.clear();
-                    originalGraphData.edges.clear();
-                    originalGraphData.nodes.add(graphData.nodes);
-                    originalGraphData.edges.add(graphData.edges);
-                    drawGraph(originalGraphData.nodes, originalGraphData.edges);
+
+                if (isMainQuery) {
+                    lastMainGraphEndpoint = endpoint;
                     resetBtn.classList.remove('hidden');
+                }
+
+                if (graphData.nodes && graphData.nodes.length > 0) {
+                    drawGraph(graphData.nodes, graphData.edges);
                 } else {
                     graphContainer.innerHTML = '<p class="p-4 text-gray-500">Nenhum dado de grafo para visualizar.</p>';
                 }
@@ -136,7 +155,9 @@
                 } else if (chatData.object) {
                     endpoint = `/graph-data?object_name=${encodeURIComponent(chatData.object)}`;
                 }
-                if(endpoint) fetchAndDrawGraph(endpoint);
+                if(endpoint) {
+                    fetchAndDrawGraph(endpoint, true);
+                }
 
             } catch (error) {
                 console.error('Erro:', error);
@@ -147,9 +168,8 @@
         sendBtn.addEventListener('click', sendMessage);
         userInput.addEventListener('keypress', (e) => e.key === 'Enter' && sendMessage());
         resetBtn.addEventListener('click', () => {
-            if(network && originalGraphData.nodes.length > 0) {
-                drawGraph(originalGraphData.nodes, originalGraphData.edges);
-                network.fit();
+            if(lastMainGraphEndpoint) {
+                fetchAndDrawGraph(lastMainGraphEndpoint, true);
             }
         });
     </script>

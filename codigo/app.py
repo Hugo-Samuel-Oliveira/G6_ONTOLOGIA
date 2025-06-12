@@ -104,6 +104,7 @@ def chat():
         action = "full_graph"
     return jsonify({"response": response_text, "object": bim_object, "property": bim_property, "action": action})
 
+
 @app.route('/graph-data')
 def get_graph_data():
     object_name = request.args.get('object_name')
@@ -111,17 +112,24 @@ def get_graph_data():
 
     sparql = SPARQLWrapper(FUSEKI_ENDPOINT)
     sparql.setReturnFormat(JSON)
+    # Query que busca tanto relações de entrada quanto de saída para o objeto
     query = f"""
         PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
         PREFIX inst: <{BASE_URI}>
-        SELECT ?s ?s_label ?p_label ?o ?o_label
+        SELECT DISTINCT ?s ?s_label ?p_label ?o ?o_label
         WHERE {{
-            ?s rdfs:label "{object_name}" .
+            BIND("{object_name}" AS ?target_label)
+            {{
+                ?s rdfs:label ?target_label .
+                ?s ?p ?o .
+            }} UNION {{
+                ?o rdfs:label ?target_label .
+                ?s ?p ?o .
+            }}
             ?s rdfs:label ?s_label .
-            ?s ?p ?o .
+            ?o rdfs:label ?o_label .
             BIND(REPLACE(STR(?p), ".*[/#]", "") AS ?p_label)
-            FILTER(isIRI(?o))
-            OPTIONAL {{ ?o rdfs:label ?o_label . }}
+            FILTER(isIRI(?o) && isIRI(?s))
         }}
     """
     nodes, edges, node_ids = [], [], set()
@@ -130,11 +138,19 @@ def get_graph_data():
         results = sparql.query().convert()
         for res in results.get("results", {}).get("bindings", []):
             s_uri = res['s']['value']; s_label = res['s_label']['value']
-            if s_uri not in node_ids: nodes.append({"id": s_uri, "label": s_label, "color": "#a3e635", "size": 25}); node_ids.add(s_uri)
-            o_uri = res['o']['value']
+            o_uri = res['o']['value']; o_label = res.get('o_label', {}).get('value', o_uri.split('#')[-1])
+            
+            # Adiciona os nós (sujeito e objeto)
+            if s_uri not in node_ids:
+                is_central = s_label == object_name
+                nodes.append({"id": s_uri, "label": s_label, "color": "#a3e635" if is_central else "#93c5fd", "size": 25 if is_central else 15});
+                node_ids.add(s_uri)
             if o_uri not in node_ids:
-                o_label = res.get('o_label', {}).get('value', o_uri.split('#')[-1])
-                nodes.append({"id": o_uri, "label": o_label}); node_ids.add(o_uri)
+                is_central = o_label == object_name
+                nodes.append({"id": o_uri, "label": o_label, "color": "#a3e635" if is_central else "#93c5fd", "size": 25 if is_central else 15});
+                node_ids.add(o_uri)
+            
+            # Adiciona a aresta
             edges.append({"from": s_uri, "to": o_uri, "label": res['p_label']['value']})
     except Exception as e: print(f"Erro ao gerar dados do grafo: {e}")
     return jsonify({"nodes": nodes, "edges": edges})
@@ -176,3 +192,4 @@ if __name__ == '__main__':
         print("!!! Execute 'python setup.py' para criar os modelos e dados necessários.")
     else:
         app.run(host='0.0.0.0', port=5000, debug=False)
+
