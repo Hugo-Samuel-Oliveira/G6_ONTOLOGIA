@@ -59,19 +59,19 @@ def run_ifc_conversion():
 def run_nlu_training():
     NLU_MODEL_PATH = "./nlu_model"
     TRAIN_DATA = [
-        ("oi", {"cats": {"saudacao": 1.0, "despedida": 0.0, "perguntar_propriedade": 0.0}}),
-        ("olá", {"cats": {"saudacao": 1.0, "despedida": 0.0, "perguntar_propriedade": 0.0}}),
-        ("tchau", {"cats": {"saudacao": 0.0, "despedida": 1.0, "perguntar_propriedade": 0.0}}),
-        ("Qual o material da 'parede P-10'?", {"cats": {"saudacao": 0.0, "despedida": 0.0, "perguntar_propriedade": 1.0}}),
-        ("Do que é feito o 'pilar C-05'?", {"cats": {"saudacao": 0.0, "despedida": 0.0, "perguntar_propriedade": 1.0}}),
-        ("onde está o 'floor'?", {"cats": {"saudacao": 0.0, "despedida": 0.0, "perguntar_propriedade": 1.0}}),
-        ("qual o tipo do 'floor'?", {"cats": {"saudacao": 0.0, "despedida": 0.0, "perguntar_propriedade": 1.0}}),
-        ("o que o 'Single-family house' contém?", {"cats": {"saudacao": 0.0, "despedida": 0.0, "perguntar_propriedade": 1.0}})
+        ("oi", {"cats": {"saudacao": 1.0, "despedida": 0.0, "perguntar_propriedade": 0.0, "grafo_completo": 0.0}}),
+        ("olá", {"cats": {"saudacao": 1.0, "despedida": 0.0, "perguntar_propriedade": 0.0, "grafo_completo": 0.0}}),
+        ("tchau", {"cats": {"saudacao": 0.0, "despedida": 1.0, "perguntar_propriedade": 0.0, "grafo_completo": 0.0}}),
+        ("qual o material do 'floor'?", {"cats": {"saudacao": 0.0, "despedida": 0.0, "perguntar_propriedade": 1.0, "grafo_completo": 0.0}}),
+        ("onde está o 'floor'?", {"cats": {"saudacao": 0.0, "despedida": 0.0, "perguntar_propriedade": 1.0, "grafo_completo": 0.0}}),
+        ("qual o tipo do 'floor'?", {"cats": {"saudacao": 0.0, "despedida": 0.0, "perguntar_propriedade": 1.0, "grafo_completo": 0.0}}),
+        ("mostre o grafo inteiro", {"cats": {"saudacao": 0.0, "despedida": 0.0, "perguntar_propriedade": 0.0, "grafo_completo": 1.0}}),
+        ("gere a ontologia completa", {"cats": {"saudacao": 0.0, "despedida": 0.0, "perguntar_propriedade": 0.0, "grafo_completo": 1.0}}),
     ]
     nlp_train = spacy.blank("pt"); textcat = nlp_train.add_pipe("textcat")
-    textcat.add_label("saudacao"); textcat.add_label("despedida"); textcat.add_label("perguntar_propriedade")
+    textcat.add_label("saudacao"); textcat.add_label("despedida"); textcat.add_label("perguntar_propriedade"); textcat.add_label("grafo_completo")
     nlp_train.initialize()
-    for i in range(10):
+    for i in range(15): # Aumentado para melhor aprendizado
         random.shuffle(TRAIN_DATA); losses = {}
         for text, annotations in TRAIN_DATA:
             doc = nlp_train.make_doc(text); example = Example.from_dict(doc, annotations)
@@ -80,45 +80,32 @@ def run_nlu_training():
     print(f"-> Modelo de NLU treinado e salvo em '{NLU_MODEL_PATH}'.")
 
 def upload_to_fuseki(graph):
-    # Endpoint do Graph Store Protocol (GSP) - mais robusto para uploads
     FUSEKI_GSP_ENDPOINT = "http://localhost:3030/BIM_Knowledge_Base/data"
-    
-    # 1. Limpa o grafo default
     print("-> Limpando o grafo no Fuseki...")
     try:
-        response_clear = requests.delete(FUSEKI_GSP_ENDPOINT, params={'default': ''})
-        response_clear.raise_for_status() # Lança um erro para status HTTP 4xx/5xx
+        requests.delete(FUSEKI_GSP_ENDPOINT, params={'default': ''}).raise_for_status()
         print("   Grafo limpo com sucesso.")
     except requests.exceptions.RequestException as e:
         print(f"ERRO: Não foi possível conectar ao Fuseki para limpar o grafo. Verifique se ele está rodando. Erro: {e}")
         return False
-
-    # 2. Carrega os novos dados
+    
     print(f"-> Carregando {len(graph)} triplos no Fuseki...")
     try:
-        response_upload = requests.post(
-            FUSEKI_GSP_ENDPOINT,
-            params={'default': ''},
-            data=graph.serialize(format='turtle'),
+        requests.post(
+            FUSEKI_GSP_ENDPOINT, params={'default': ''}, data=graph.serialize(format='turtle'),
             headers={'Content-Type': 'text/turtle'}
-        )
-        response_upload.raise_for_status()
+        ).raise_for_status()
         print("   Novos dados carregados com sucesso.")
         return True
     except requests.exceptions.RequestException as e:
         print(f"ERRO: Falha na comunicação durante o upload para o Fuseki. Erro: {e}")
         return False
 
-
 if __name__ == "__main__":
     print("Iniciando configuração completa...")
     rdf_graph = run_ifc_conversion()
-    if rdf_graph:
-        upload_success = upload_to_fuseki(rdf_graph)
-        if upload_success:
-            run_nlu_training()
-            print("\nConfiguração concluída. Agora você pode executar 'python app.py' para iniciar o servidor.")
-        else:
-            print("\nConfiguração falhou devido a um erro no upload para o Fuseki.")
+    if rdf_graph and upload_to_fuseki(rdf_graph):
+        run_nlu_training()
+        print("\nConfiguração concluída. Agora você pode executar 'python app.py' para iniciar o servidor.")
     else:
-        print("\nConfiguração falhou porque a conversão do IFC não gerou um grafo.")
+        print("\nConfiguração falhou.")

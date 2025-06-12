@@ -91,15 +91,18 @@ def chat():
 
     intent = get_intent(user_message)
     response_text = "Desculpe, não entendi o que você quis dizer."
-    bim_object = None; bim_property = None
+    bim_object = None; bim_property = None; action = None
+
     if intent == "saudacao": response_text = "Olá! Sou seu assistente BIM. Como posso ajudar?"
     elif intent == "despedida": response_text = "Até mais!"
     elif intent == "perguntar_propriedade":
         bim_object = extract_bim_object(user_message)
         bim_property = extract_bim_property(user_message)
         response_text = query_bim_property(bim_object, bim_property)
-    return jsonify({"response": response_text, "object": bim_object, "property": bim_property})
-
+    elif intent == "grafo_completo":
+        response_text = "OK. Gerando o grafo completo da ontologia..."
+        action = "full_graph"
+    return jsonify({"response": response_text, "object": bim_object, "property": bim_property, "action": action})
 
 @app.route('/graph-data')
 def get_graph_data():
@@ -111,7 +114,6 @@ def get_graph_data():
     query = f"""
         PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
         PREFIX inst: <{BASE_URI}>
-        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
         SELECT ?s ?s_label ?p_label ?o ?o_label
         WHERE {{
             ?s rdfs:label "{object_name}" .
@@ -126,13 +128,9 @@ def get_graph_data():
     try:
         sparql.setQuery(query)
         results = sparql.query().convert()
-        bindings = results.get("results", {}).get("bindings", [])
-        if not bindings: return jsonify({"nodes": [], "edges": []})
-
-        for res in bindings:
+        for res in results.get("results", {}).get("bindings", []):
             s_uri = res['s']['value']; s_label = res['s_label']['value']
-            if s_uri not in node_ids:
-                nodes.append({"id": s_uri, "label": s_label, "color": "#a3e635", "size": 25}); node_ids.add(s_uri)
+            if s_uri not in node_ids: nodes.append({"id": s_uri, "label": s_label, "color": "#a3e635", "size": 25}); node_ids.add(s_uri)
             o_uri = res['o']['value']
             if o_uri not in node_ids:
                 o_label = res.get('o_label', {}).get('value', o_uri.split('#')[-1])
@@ -140,6 +138,37 @@ def get_graph_data():
             edges.append({"from": s_uri, "to": o_uri, "label": res['p_label']['value']})
     except Exception as e: print(f"Erro ao gerar dados do grafo: {e}")
     return jsonify({"nodes": nodes, "edges": edges})
+
+@app.route('/full-graph-data')
+def get_full_graph_data():
+    sparql = SPARQLWrapper(FUSEKI_ENDPOINT)
+    sparql.setReturnFormat(JSON)
+    query = f"""
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+        PREFIX inst: <{BASE_URI}>
+        SELECT ?s_label ?p_label ?o_label ?s ?o
+        WHERE {{
+            ?s ?p ?o .
+            FILTER (STRSTARTS(STR(?s), STR(inst:)) && isIRI(?o) && STRSTARTS(STR(?o), STR(inst:)))
+            ?s rdfs:label ?s_label .
+            ?o rdfs:label ?o_label .
+            BIND(REPLACE(STR(?p), ".*[/#]", "") AS ?p_label)
+        }}
+        LIMIT 150
+    """
+    nodes, edges, node_ids = [], [], set()
+    try:
+        sparql.setQuery(query)
+        results = sparql.query().convert()
+        for res in results.get("results", {}).get("bindings", []):
+            s_uri = res['s']['value']; s_label = res['s_label']['value']
+            if s_uri not in node_ids: nodes.append({"id": s_uri, "label": s_label}); node_ids.add(s_uri)
+            o_uri = res['o']['value']; o_label = res['o_label']['value']
+            if o_uri not in node_ids: nodes.append({"id": o_uri, "label": o_label}); node_ids.add(o_uri)
+            edges.append({"from": s_uri, "to": o_uri, "label": res['p_label']['value']})
+    except Exception as e: print(f"Erro ao gerar grafo completo: {e}")
+    return jsonify({"nodes": nodes, "edges": edges})
+
 
 if __name__ == '__main__':
     if not os.path.exists(NLU_MODEL_PATH):
