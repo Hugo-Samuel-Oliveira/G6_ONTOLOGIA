@@ -66,25 +66,30 @@ def extract_bim_property(text):
     if match:
         return match.group(1)
 
-    # Em seguida, usa o mapa de keywords para entender a linguagem natural
+    # Em seguida, usa a nova lógica flexível para entender a linguagem natural
     text_lower = text.lower()
-    
+    # Converte a frase do usuário em um conjunto de palavras para busca eficiente
+    user_words = set(text_lower.split())
+
     # Itera sobre cada relação técnica e suas frases associadas
     for technical_relation, user_phrases in RELATIONSHIP_KEYWORD_MAP.items():
         # Itera sobre cada frase que o usuário pode dizer
         for phrase in user_phrases:
-            if phrase in text_lower:
-                # Se encontrar uma correspondência, retorna a relação técnica correta
+            # Divide a frase-chave em palavras individuais
+            required_words = phrase.split()
+            
+            # Verifica se TODAS as palavras-chave estão presentes na pergunta do usuário
+            if all(word in user_words for word in required_words):
+                # Se estiverem, encontramos a intenção!
                 return technical_relation
             
-    # Se nenhuma frase for encontrada, assume que o usuário quer saber o nome (label)
+    # Se nenhuma frase corresponder, assume que o usuário quer saber o nome (label)
     return "label"
 
 def query_bim_property(object_name, predicate_label):
     if not object_name:
         return "Não consegui identificar sobre qual elemento você está perguntando."
 
-    # Lógica para construir o predicado completo a partir do seu label
     if predicate_label == 'type':
         predicate = 'rdf:type'
     elif predicate_label == 'label':
@@ -95,31 +100,29 @@ def query_bim_property(object_name, predicate_label):
     sparql = SPARQLWrapper(FUSEKI_ENDPOINT)
     sparql.setReturnFormat(JSON)
 
-    # Etapa 1: Tentar encontrar a propriedade de SAÍDA
-    query_outgoing = f"""
-        # ... (a consulta em si não muda)
-        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-        PREFIX inst: <{BASE_URI}>
-        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-        SELECT ?valueLabel WHERE {{
-            {{ ?element rdfs:label "{object_name}" . ?element {predicate} ?value . }}
-            UNION
-            {{ ?value rdfs:label "{object_name}" . ?element {predicate} ?value . }}
-            OPTIONAL {{ ?value rdfs:label ?valueLabel . }}
-            FILTER(isLiteral(?valueLabel))
-        }} LIMIT 1
-    """
     try:
+        # --- ETAPA 1: Busca exclusivamente por TODAS as relações de SAÍDA ---
+        query_outgoing = f"""
+            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+            PREFIX inst: <{BASE_URI}>
+            PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+            SELECT DISTINCT ?valueLabel WHERE {{
+                ?element rdfs:label "{object_name}" .
+                ?element {predicate} ?value .
+                ?value rdfs:label ?valueLabel .
+            }}
+        """
         sparql.setQuery(query_outgoing)
-        results = sparql.query().convert()
-        if results["results"]["bindings"]:
-            value = results["results"]["bindings"][0]["valueLabel"]["value"].split('#')[-1]
-            # --- RESPOSTA DE SAÍDA MODIFICADA ---
-            return f"✅ Relação de Saída: A propriedade '{predicate_label}' para '{object_name}' é: {value}."
+        results = sparql.query().convert()["results"]["bindings"]
 
-        # Etapa 2: Se falhar, tentar encontrar relações de ENTRADA
+        if results:
+            values = [item["valueLabel"]["value"] for item in results]
+            count = len(values)
+            return (f"✅ Relação de Saída ({count} resultado(s)): A propriedade '{predicate_label}' para '{object_name}' é: "
+                    f"{', '.join(f"'{v}'" for v in values)}.")
+
+        # --- ETAPA 2: Se não houver saída, busca exclusivamente por TODAS as relações de ENTRADA ---
         query_incoming = f"""
-            # ... (a consulta em si não muda)
             PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
             PREFIX inst: <{BASE_URI}>
             PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
@@ -127,23 +130,23 @@ def query_bim_property(object_name, predicate_label):
                 ?object rdfs:label "{object_name}" .
                 ?subject {predicate} ?object .
                 ?subject rdfs:label ?subjectLabel .
-            }} LIMIT 10
+            }}
         """
         sparql.setQuery(query_incoming)
-        inverse_results = sparql.query().convert()
-        if inverse_results["results"]["bindings"]:
-            subjects = [item["subjectLabel"]["value"] for item in inverse_results["results"]["bindings"]]
+        inverse_results = sparql.query().convert()["results"]["bindings"]
+
+        if inverse_results:
+            subjects = [item["subjectLabel"]["value"] for item in inverse_results]
+            count = len(subjects)
             inverse_relation_phrase = INVERSE_PROPERTY_MAP.get(predicate, f"têm a relação '{predicate_label}' para")
-            # --- RESPOSTA DE ENTRADA MODIFICADA ---
-            return (f"➡️ Relação de Entrada: Não encontrei uma propriedade de saída '{predicate_label}' para '{object_name}', "
-                    f"mas encontrei {len(subjects)} objeto(s) que {inverse_relation_phrase} ele: "
+            return (f"➡️ Relação de Entrada ({count} resultado(s)): Os seguintes objetos {inverse_relation_phrase} '{object_name}': "
                     f"{', '.join(f"'{s}'" for s in subjects)}.")
 
     except Exception as e:
         return f"Erro na consulta SPARQL: {e}"
 
-    # Etapa 3: Se ambas as buscas falharem
-    return f"❌ Desculpe, não encontrei a propriedade '{predicate_label}' para o objeto '{object_name}', nem relações de entrada correspondentes."
+    # --- ETAPA 3: Se ambas as buscas falharem ---
+    return f"❌ Desculpe, não encontrei a propriedade '{predicate_label}' para o objeto '{object_name}', nem relações de entrada ou saída correspondentes."
 
 # --- Endpoints da Aplicação ---
 @app.route('/')
