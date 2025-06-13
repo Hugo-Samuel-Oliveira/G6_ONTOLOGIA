@@ -54,6 +54,20 @@ def run_ifc_conversion():
                     if getattr(part, 'Name', None): g.add((inst[rel.RelatingObject.GlobalId], inst.aggregates, inst[part.GlobalId]))
     
     print(f"-> Conversão concluída. {len(g)} triplos gerados.")
+
+    # Garante que a pasta 'static' exista e salva o arquivo nela
+    output_folder = "static"
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+    
+    output_path = os.path.join(output_folder, "modelo_convertido.ttl")
+    
+    try:
+        g.serialize(destination=output_path, format='turtle')
+        print(f"-> Modelo Turtle salvo para visualização do usuário em '{output_path}'.")
+    except Exception as e:
+        print(f"ERRO: Não foi possível salvar o arquivo Turtle. {e}")
+
     return g
 
 def run_nlu_training():

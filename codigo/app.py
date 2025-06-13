@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, Response
 import spacy
 from SPARQLWrapper import SPARQLWrapper, JSON
 import re
@@ -11,12 +11,23 @@ app = Flask(__name__)
 FUSEKI_ENDPOINT = os.environ.get("FUSEKI_ENDPOINT", "http://localhost:3030/BIM_Knowledge_Base/query")
 NLU_MODEL_PATH = "./nlu_model"
 BASE_URI = "http://exemplo.org/bim#"
-PROPERTY_MAP = {
-    "material": "inst:hasMaterial", "composição": "inst:hasMaterial", "feito de": "inst:hasMaterial",
-    "onde está": "inst:isContainedIn", "localização": "inst:isContainedIn", "parte de": "inst:isContainedIn",
-    "tipo": "inst:isOfType", "tipo de": "inst:isOfType",
-    "agrega": "inst:aggregates", "contém": "inst:aggregates",
-    "classe": "rdf:type", "nome": "rdfs:label",
+
+RELATIONSHIP_KEYWORD_MAP = {
+    # Relação Técnica: [Lista de palavras e frases que o usuário pode dizer]
+    'isContainedIn': ['onde está', 'localização de', 'em que parte fica', 'está contido em'],
+    'hasMaterial': ['material de', 'composição de', 'é feito de', 'do que é feito'],
+    'aggregates': ['o que contém', 'o que agrega', 'quais são as partes de', 'composto por'],
+    'isOfType': ['qual o tipo de', 'tipo específico de'],
+    'type': ['qual a classe de', 'classe de', 'tipo genérico de', 'instância de']
+}
+
+# O mapa inverso agora pode ser gerado dinamicamente, mas por clareza vamos mantê-lo.
+INVERSE_PROPERTY_MAP = {
+    "inst:isContainedIn": "contêm o(a)",
+    "inst:hasMaterial": "têm como material",
+    "inst:aggregates": "são parte de",
+    "inst:isOfType": "são do tipo",
+    "rdf:type": "são instâncias da classe"
 }
 
 # --- Carregamento do Modelo NLU ---
@@ -34,56 +45,105 @@ def get_intent(text):
     return max(doc.cats, key=doc.cats.get)
 
 def extract_bim_object(text):
-    match = re.search(r"'(.*?)'|\"([^\"]*)\"", text)
-    if match: return match.group(1) or match.group(2)
-    match = re.search(r"\b(da|do|o|a)\s+([\w\s\d\-]+)", text, re.IGNORECASE)
-    if match:
-        object_name = match.group(2).strip()
-        return object_name[:-1].strip() if object_name.endswith('?') else object_name
-    return None
+    # REGEX MAIS INTELIGENTE: Procura por um padrão que indica explicitamente o objeto.
+    # Prioriza frases como "do 'objeto'" ou "para o objeto 'objeto'".
+    explicit_match = re.search(r"(?:para o objeto|do|da|de|para)\s+('([^']*)'|\"([^\"]*)\")", text, re.IGNORECASE)
+    if explicit_match:
+        # O grupo 2 captura o que está dentro das aspas simples, o grupo 3 o que está nas duplas.
+        return explicit_match.group(2) or explicit_match.group(3)
+
+    # FALLBACK: Se não encontrar o padrão explícito, tenta pegar a primeira ocorrência entre aspas.
+    # Isso mantém a compatibilidade com perguntas mais simples.
+    fallback_match = re.search(r"'([^']*)'|\"([^\"]*)\"", text)
+    if fallback_match:
+        return fallback_match.group(1) or fallback_match.group(2)
+
+    return None # Retorna None se nenhum padrão for encontrado.
 
 def extract_bim_property(text):
-    text_lower = text.lower()
-    for prop_keyword in PROPERTY_MAP.keys():
-        if prop_keyword in text_lower:
-            return prop_keyword
-    return "nome"
+    # Primeiro, lida com as perguntas geradas pelo Construtor de Consultas
+    match = re.search(r"relação '([^']*)'", text, re.IGNORECASE)
+    if match:
+        return match.group(1)
 
-def query_bim_property(object_name, property_keyword):
-    if not object_name: return "Não consegui identificar sobre qual elemento você está perguntando."
-    predicate = PROPERTY_MAP.get(property_keyword, "rdfs:label")
-    if not predicate: return f"Não sei como consultar a propriedade '{property_keyword}'."
+    # Em seguida, usa o mapa de keywords para entender a linguagem natural
+    text_lower = text.lower()
+    
+    # Itera sobre cada relação técnica e suas frases associadas
+    for technical_relation, user_phrases in RELATIONSHIP_KEYWORD_MAP.items():
+        # Itera sobre cada frase que o usuário pode dizer
+        for phrase in user_phrases:
+            if phrase in text_lower:
+                # Se encontrar uma correspondência, retorna a relação técnica correta
+                return technical_relation
+            
+    # Se nenhuma frase for encontrada, assume que o usuário quer saber o nome (label)
+    return "label"
+
+def query_bim_property(object_name, predicate_label):
+    if not object_name:
+        return "Não consegui identificar sobre qual elemento você está perguntando."
+
+    # Lógica para construir o predicado completo a partir do seu label
+    if predicate_label == 'type':
+        predicate = 'rdf:type'
+    elif predicate_label == 'label':
+        predicate = 'rdfs:label'
+    else:
+        predicate = f'inst:{predicate_label}'
 
     sparql = SPARQLWrapper(FUSEKI_ENDPOINT)
     sparql.setReturnFormat(JSON)
-    # Consulta bidirecional para encontrar a relação em qualquer direção
-    query = f"""
+
+    # Etapa 1: Tentar encontrar a propriedade de SAÍDA
+    query_outgoing = f"""
+        # ... (a consulta em si não muda)
         PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
         PREFIX inst: <{BASE_URI}>
         PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
         SELECT ?valueLabel WHERE {{
-            {{
-                ?element rdfs:label "{object_name}" .
-                ?element {predicate} ?value .
-            }} UNION {{
-                ?value rdfs:label "{object_name}" .
-                ?element {predicate} ?value .
-            }}
-            OPTIONAL {{ ?element rdfs:label ?valueLabel . }}
-            FILTER(?valueLabel != "{object_name}")
+            {{ ?element rdfs:label "{object_name}" . ?element {predicate} ?value . }}
+            UNION
+            {{ ?value rdfs:label "{object_name}" . ?element {predicate} ?value . }}
+            OPTIONAL {{ ?value rdfs:label ?valueLabel . }}
+            FILTER(isLiteral(?valueLabel))
         }} LIMIT 1
     """
     try:
-        sparql.setQuery(query)
+        sparql.setQuery(query_outgoing)
         results = sparql.query().convert()
-        bindings = results["results"]["bindings"]
-        if bindings:
-            value = bindings[0]["valueLabel"]["value"].split('#')[-1]
-            return f"A propriedade '{property_keyword}' para '{object_name}' é: {value}."
-        else:
-            return f"Desculpe, não encontrei a propriedade '{property_keyword}' para o objeto '{object_name}'."
+        if results["results"]["bindings"]:
+            value = results["results"]["bindings"][0]["valueLabel"]["value"].split('#')[-1]
+            # --- RESPOSTA DE SAÍDA MODIFICADA ---
+            return f"✅ Relação de Saída: A propriedade '{predicate_label}' para '{object_name}' é: {value}."
+
+        # Etapa 2: Se falhar, tentar encontrar relações de ENTRADA
+        query_incoming = f"""
+            # ... (a consulta em si não muda)
+            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+            PREFIX inst: <{BASE_URI}>
+            PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+            SELECT DISTINCT ?subjectLabel WHERE {{
+                ?object rdfs:label "{object_name}" .
+                ?subject {predicate} ?object .
+                ?subject rdfs:label ?subjectLabel .
+            }} LIMIT 10
+        """
+        sparql.setQuery(query_incoming)
+        inverse_results = sparql.query().convert()
+        if inverse_results["results"]["bindings"]:
+            subjects = [item["subjectLabel"]["value"] for item in inverse_results["results"]["bindings"]]
+            inverse_relation_phrase = INVERSE_PROPERTY_MAP.get(predicate, f"têm a relação '{predicate_label}' para")
+            # --- RESPOSTA DE ENTRADA MODIFICADA ---
+            return (f"➡️ Relação de Entrada: Não encontrei uma propriedade de saída '{predicate_label}' para '{object_name}', "
+                    f"mas encontrei {len(subjects)} objeto(s) que {inverse_relation_phrase} ele: "
+                    f"{', '.join(f"'{s}'" for s in subjects)}.")
+
     except Exception as e:
         return f"Erro na consulta SPARQL: {e}"
+
+    # Etapa 3: Se ambas as buscas falharem
+    return f"❌ Desculpe, não encontrei a propriedade '{predicate_label}' para o objeto '{object_name}', nem relações de entrada correspondentes."
 
 # --- Endpoints da Aplicação ---
 @app.route('/')
@@ -115,49 +175,67 @@ def chat():
 @app.route('/graph-data')
 def get_graph_data():
     object_name = request.args.get('object_name')
-    if not object_name: return jsonify({"nodes": [], "edges": []})
+    if not object_name:
+        return jsonify({"nodes": [], "edges": []})
 
     sparql = SPARQLWrapper(FUSEKI_ENDPOINT)
     sparql.setReturnFormat(JSON)
-    # Query que busca tanto relações de entrada quanto de saída para o objeto
+
+    # A consulta SPARQL continua a mesma
     query = f"""
         PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
         PREFIX inst: <{BASE_URI}>
         SELECT DISTINCT ?s ?s_label ?p_label ?o ?o_label
         WHERE {{
             BIND("{object_name}" AS ?target_label)
-            {{
-                ?s rdfs:label ?target_label .
-                ?s ?p ?o .
-            }} UNION {{
-                ?o rdfs:label ?target_label .
-                ?s ?p ?o .
-            }}
-            ?s rdfs:label ?s_label .
-            ?o rdfs:label ?o_label .
+            {{ ?s rdfs:label ?target_label. ?s ?p ?o. }}
+            UNION
+            {{ ?o rdfs:label ?target_label. ?s ?p ?o. }}
+            
+            ?s rdfs:label ?s_label.
+            ?o rdfs:label ?o_label.
             BIND(REPLACE(STR(?p), ".*[/#]", "") AS ?p_label)
             FILTER(isIRI(?o) && isIRI(?s))
         }}
     """
+
     nodes, edges, node_ids = [], [], set()
+
     try:
         sparql.setQuery(query)
         results = sparql.query().convert()
+
+        # --- LÓGICA DE COLORAÇÃO MODIFICADA ---
+        central_node_color = "#a3e635"  # Verde para o nó principal
+        related_node_color = "#93c5fd"  # Azul para os nós relacionados
+        
         for res in results.get("results", {}).get("bindings", []):
-            s_uri = res['s']['value']; s_label = res['s_label']['value']
-            o_uri = res['o']['value']; o_label = res.get('o_label', {}).get('value', o_uri.split('#')[-1])
-            
+            s_uri = res['s']['value']
+            s_label = res['s_label']['value']
+            o_uri = res['o']['value']
+            o_label = res.get('o_label', {}).get('value', o_uri.split('#')[-1])
+
+            # Adiciona o nó de origem (subject)
             if s_uri not in node_ids:
                 is_central = s_label == object_name
-                nodes.append({"id": s_uri, "label": s_label, "color": "#a3e635" if is_central else "#93c5fd", "size": 25 if is_central else 15});
+                color = central_node_color if is_central else related_node_color
+                size = 25 if is_central else 15
+                nodes.append({"id": s_uri, "label": s_label, "color": color, "size": size})
                 node_ids.add(s_uri)
+
+            # Adiciona o nó de destino (object)
             if o_uri not in node_ids:
                 is_central = o_label == object_name
-                nodes.append({"id": o_uri, "label": o_label, "color": "#a3e635" if is_central else "#93c5fd", "size": 25 if is_central else 15});
+                color = central_node_color if is_central else related_node_color
+                size = 25 if is_central else 15
+                nodes.append({"id": o_uri, "label": o_label, "color": color, "size": size})
                 node_ids.add(o_uri)
-            
+
             edges.append({"from": s_uri, "to": o_uri, "label": res['p_label']['value']})
-    except Exception as e: print(f"Erro ao gerar dados do grafo: {e}")
+
+    except Exception as e:
+        print(f"Erro ao gerar dados do grafo: {e}")
+
     return jsonify({"nodes": nodes, "edges": edges})
 
 @app.route('/full-graph-data')
@@ -194,51 +272,80 @@ def get_full_graph_data():
 def get_ontology_summary():
     sparql = SPARQLWrapper(FUSEKI_ENDPOINT)
     sparql.setReturnFormat(JSON)
-    
+
+    # Consulta para buscar todos os tipos de objetos e exemplos
     query_types = f"""
         PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
         PREFIX inst: <{BASE_URI}>
+        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+
         SELECT ?type_label (GROUP_CONCAT(DISTINCT ?example_label; SEPARATOR=", ") AS ?examples)
         WHERE {{
             ?s a ?type .
             ?s rdfs:label ?example_label .
             ?type rdfs:label ?type_label .
+            # Filtra para pegar apenas tipos definidos em nossa ontologia
             FILTER(STRSTARTS(STR(?type), STR(inst:)))
-        }}
-        GROUP BY ?type_label
-        ORDER BY ?type_label
+        }} GROUP BY ?type_label ORDER BY ?type_label
     """
-    
+
+    # --- CONSULTA DE RELAÇÕES APRIMORADA ---
+    # Esta consulta agora busca DINAMICAMENTE todos os predicados (relações)
     query_relations = f"""
         PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
         PREFIX inst: <{BASE_URI}>
-        SELECT DISTINCT ?p_label
-        WHERE {{
+        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+
+        SELECT DISTINCT ?p_label WHERE {{
             ?s ?p ?o .
-            FILTER(STRSTARTS(STR(?p), STR(inst:)))
+            # Filtro para garantir que a relação conecte duas entidades, não uma entidade a um valor literal (como um nome)
+            FILTER(isIRI(?s) && isIRI(?p) && isIRI(?o))
+
+            # Filtro para excluir predicados muito genéricos do RDF/RDFS que não são úteis ao usuário
+            FILTER(!STRSTARTS(STR(?p), STR(rdfs:)))
+            
             BIND(REPLACE(STR(?p), ".*[/#]", "") AS ?p_label)
-        }}
-        ORDER BY ?p_label
+        }} ORDER BY ?p_label
     """
-    
+
     try:
         sparql.setQuery(query_types)
         types_results = sparql.query().convert()
-        
+
         sparql.setQuery(query_relations)
         relations_results = sparql.query().convert()
-        
+
         types = [
-            {"type": res['type_label']['value'], "examples": res['examples']['value'].split(', ')} 
+            {"type": res['type_label']['value'], "examples": res['examples']['value'].split(', ')}
             for res in types_results["results"]["bindings"]
         ]
+        
+        # Extrai apenas o label da relação para a lista
         relations = [res['p_label']['value'] for res in relations_results["results"]["bindings"]]
-
+        
+        # Adiciona 'type' manualmente caso não seja capturado, pois é uma relação fundamental (rdf:type)
+        if 'type' not in relations:
+            relations.insert(0, 'type')
+        
         return jsonify({"types": types, "relations": relations})
 
     except Exception as e:
         print(f"Erro ao buscar resumo da ontologia: {e}")
         return jsonify({"error": str(e)}), 500
+
+@app.route('/get-turtle-file')
+def get_turtle_file():
+    try:
+        # O caminho para o arquivo que foi salvo pelo setup.py
+        turtle_file_path = os.path.join('static', 'modelo_convertido.ttl')
+        with open(turtle_file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        # Retorna o conteúdo como texto plano, preservando a formatação
+        return Response(content, mimetype='text/plain')
+    except FileNotFoundError:
+        return "Arquivo Turtle não encontrado. Execute 'python setup.py' primeiro.", 404
+    except Exception as e:
+        return f"Erro ao ler o arquivo: {e}", 500
 
 if __name__ == '__main__':
     if not os.path.exists(NLU_MODEL_PATH):
