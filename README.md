@@ -160,7 +160,7 @@ Abra o navegador em: [http://localhost:5000](http://localhost:5000)
 **@contato:** [Opcional – inserir e-mails se desejarem]  
 **@data última versão:** 13/06/2025  
 **@versão:** 1.0  
-**@outros repositórios:** [Inserir URLs dos seus repositórios Git aqui]
+**@outros repositórios:** https://github.com/Hugo-Samuel-Oliveira/G6_ONTOLOGIA
 
 **@Agradecimentos:**  
 Universidade Federal do Maranhão (UFMA), Professor Doutor Thales Levi Azevedo Valente, e colegas de curso.
