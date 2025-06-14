@@ -13,12 +13,12 @@ NLU_MODEL_PATH = "./nlu_model"
 BASE_URI = "http://exemplo.org/bim#"
 
 RELATIONSHIP_KEYWORD_MAP = {
-    # Relação Técnica: [Lista de palavras e frases que o usuário pode dizer]
-    'isContainedIn': ['onde está', 'localização de', 'em que parte fica', 'está contido em'],
-    'hasMaterial': ['material de', 'composição de', 'é feito de', 'do que é feito'],
-    'aggregates': ['o que contém', 'o que agrega', 'quais são as partes de', 'composto por'],
-    'isOfType': ['qual o tipo de', 'tipo específico de'],
-    'type': ['qual a classe de', 'classe de', 'tipo genérico de', 'instância de']
+    # Relação Técnica: [Lista de palavras-chave únicas e fortes]
+    'isContainedIn': ['onde', 'localização'],
+    'hasMaterial': ['material', 'composição'],
+    'aggregates': ['contém', 'agrega', 'partes'],
+    'isOfType': ['tipo'], # Usaremos 'tipo' para a relação mais específica primeiro
+    'type': ['classe']
 }
 
 # O mapa inverso agora pode ser gerado dinamicamente, mas por clareza vamos mantê-lo.
@@ -61,29 +61,25 @@ def extract_bim_object(text):
     return None # Retorna None se nenhum padrão for encontrado.
 
 def extract_bim_property(text):
-    # Primeiro, lida com as perguntas geradas pelo Construtor de Consultas
+    # Lida com perguntas geradas pelo Construtor de Consultas
     match = re.search(r"relação '([^']*)'", text, re.IGNORECASE)
     if match:
         return match.group(1)
 
-    # Em seguida, usa a nova lógica flexível para entender a linguagem natural
+    # Nova lógica: busca por palavras-chave únicas e fortes
     text_lower = text.lower()
-    # Converte a frase do usuário em um conjunto de palavras para busca eficiente
     user_words = set(text_lower.split())
 
-    # Itera sobre cada relação técnica e suas frases associadas
-    for technical_relation, user_phrases in RELATIONSHIP_KEYWORD_MAP.items():
-        # Itera sobre cada frase que o usuário pode dizer
-        for phrase in user_phrases:
-            # Divide a frase-chave em palavras individuais
-            required_words = phrase.split()
+    # A ordem aqui importa. Verificamos 'isOfType' antes de 'type'.
+    relations_in_order = ['isOfType', 'type', 'isContainedIn', 'hasMaterial', 'aggregates']
+
+    for technical_relation in relations_in_order:
+        keywords = RELATIONSHIP_KEYWORD_MAP.get(technical_relation, [])
+        # Verifica se ALGUMA das palavras-chave está na pergunta do usuário
+        if any(word in user_words for word in keywords):
+            return technical_relation
             
-            # Verifica se TODAS as palavras-chave estão presentes na pergunta do usuário
-            if all(word in user_words for word in required_words):
-                # Se estiverem, encontramos a intenção!
-                return technical_relation
-            
-    # Se nenhuma frase corresponder, assume que o usuário quer saber o nome (label)
+    # Se nenhuma palavra-chave for encontrada, retorna 'label'
     return "label"
 
 def query_bim_property(object_name, predicate_label):
@@ -335,20 +331,6 @@ def get_ontology_summary():
     except Exception as e:
         print(f"Erro ao buscar resumo da ontologia: {e}")
         return jsonify({"error": str(e)}), 500
-
-@app.route('/get-turtle-file')
-def get_turtle_file():
-    try:
-        # O caminho para o arquivo que foi salvo pelo setup.py
-        turtle_file_path = os.path.join('static', 'modelo_convertido.ttl')
-        with open(turtle_file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        # Retorna o conteúdo como texto plano, preservando a formatação
-        return Response(content, mimetype='text/plain')
-    except FileNotFoundError:
-        return "Arquivo Turtle não encontrado. Execute 'python setup.py' primeiro.", 404
-    except Exception as e:
-        return f"Erro ao ler o arquivo: {e}", 500
 
 if __name__ == '__main__':
     if not os.path.exists(NLU_MODEL_PATH):
